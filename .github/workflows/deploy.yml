@@ -60,53 +60,49 @@ jobs:
             exit 1
           }
 
-      - name: Resolve or create D1 database
+      # NOTE: this step intentionally does NOT use `wrangler d1 list/info --json`.
+      # Their JSON output shape isn't stable across wrangler versions (confirmed -
+      # the id field came back null). The Cloudflare REST API itself has a fixed,
+      # documented schema, so we call it directly with curl instead.
+      - name: Resolve or create D1 database (via Cloudflare API directly)
         run: |
-          set -uo pipefail
-          extract_id() {
-            jq -r '
-              (if type=="array" then . else (.result // [.]) end)
-              | .[]?
-              | select((.name // "")==$n)
-              | (.uuid // .database_id // .id // empty)
-            ' --arg n "$DB_NAME" 2>/dev/null | head -n1
-          }
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database"
 
-          echo "=== attempt 1: wrangler d1 list --json ==="
-          LIST_JSON=$(wrangler d1 list --json 2>&1)
-          echo "$LIST_JSON"
-          DB_ID=$(echo "$LIST_JSON" | extract_id)
+          echo "=== Listing existing D1 databases ==="
+          LIST_JSON=$(curl -s -X GET "$API" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json")
+          echo "$LIST_JSON" | jq . || echo "$LIST_JSON"
 
-          if [ -z "${DB_ID:-}" ]; then
-            echo "=== attempt 2: wrangler d1 info (in case it already exists) ==="
-            INFO_JSON=$(wrangler d1 info "$DB_NAME" --json 2>&1)
-            echo "$INFO_JSON"
-            DB_ID=$(echo "$INFO_JSON" | jq -r '(.uuid // .database_id // .id // empty)' 2>/dev/null)
+          SUCCESS=$(echo "$LIST_JSON" | jq -r '.success // false')
+          if [ "$SUCCESS" != "true" ]; then
+            echo "::error::Cloudflare API list call failed (success=false above). Check CLOUDFLARE_API_TOKEN has 'D1 Edit' permission on this account and CLOUDFLARE_ACCOUNT_ID is correct."
+            exit 1
           fi
 
-          if [ -z "${DB_ID:-}" ]; then
-            echo "=== attempt 3: create it ==="
-            CREATE_OUT=$(wrangler d1 create "$DB_NAME" --json 2>&1)
-            echo "$CREATE_OUT"
-            DB_ID=$(echo "$CREATE_OUT" | jq -r '(.uuid // .database_id // .id // empty)' 2>/dev/null)
+          DB_ID=$(echo "$LIST_JSON" | jq -r --arg n "$DB_NAME" '.result[] | select(.name==$n) | .uuid' | head -n1)
+
+          if [ -z "${DB_ID:-}" ] || [ "$DB_ID" = "null" ]; then
+            echo "=== Database '$DB_NAME' not found, creating it ==="
+            CREATE_JSON=$(curl -s -X POST "$API" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "{\"name\":\"$DB_NAME\"}")
+            echo "$CREATE_JSON" | jq . || echo "$CREATE_JSON"
+
+            CREATE_SUCCESS=$(echo "$CREATE_JSON" | jq -r '.success // false')
+            if [ "$CREATE_SUCCESS" != "true" ]; then
+              echo "::error::Failed to create D1 database via Cloudflare API. See response above for the real error (commonly: token missing D1 Edit permission)."
+              exit 1
+            fi
+            DB_ID=$(echo "$CREATE_JSON" | jq -r '.result.uuid')
+          else
+            echo "Found existing database '$DB_NAME'"
           fi
 
-          if [ -z "${DB_ID:-}" ]; then
-            echo "=== attempt 4: re-list after create ==="
-            LIST_JSON=$(wrangler d1 list --json 2>&1)
-            echo "$LIST_JSON"
-            DB_ID=$(echo "$LIST_JSON" | extract_id)
-          fi
-
-          if [ -z "${DB_ID:-}" ]; then
-            echo "=== attempt 5: plain-text table parse (last resort) ==="
-            TABLE_OUT=$(wrangler d1 list 2>&1)
-            echo "$TABLE_OUT"
-            DB_ID=$(echo "$TABLE_OUT" | grep -i "$DB_NAME" | grep -Eo '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -n1)
-          fi
-
-          if [ -z "${DB_ID:-}" ]; then
-            echo "::error::Could not resolve a database_id for $DB_NAME after 5 attempts. Scroll up - one of the attempts above almost certainly printed the real wrangler/Cloudflare error (commonly: API token missing D1 permission, or wrong account id)."
+          if [ -z "${DB_ID:-}" ] || [ "$DB_ID" = "null" ]; then
+            echo "::error::Still could not resolve a database_id for $DB_NAME after list+create. See raw API responses above."
             exit 1
           fi
 
