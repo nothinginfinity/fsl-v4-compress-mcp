@@ -1,0 +1,83 @@
+name: Deploy FSL V4 MCP to Cloudflare
+
+# Trigger this by hand from the Actions tab (the "Run workflow" button works
+# fine from the GitHub iOS app or Safari - no terminal needed). It also
+# auto-runs whenever you edit worker.js/schema.sql/wrangler.jsonc on main.
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - 'workers/afo-fsl-v4-compress-mcp/**'
+
+# Required repo secrets (Settings -> Secrets and variables -> Actions -> New repository secret):
+#   CLOUDFLARE_API_TOKEN  - Cloudflare API token with "D1 Edit" + "Workers Scripts Edit" permissions
+#   CLOUDFLARE_ACCOUNT_ID - found on the Cloudflare dashboard Workers & Pages overview page
+#   FSL_GITHUB_PAT        - a GitHub token (classic, 'repo' scope, or fine-grained Contents:Read)
+#                           this becomes the worker's own GITHUB_TOKEN secret, used at runtime
+#                           by compress_repo_v4 to fetch the repos *you* point it at - unrelated
+#                           to the two secrets above, which only authenticate this deploy job.
+
+concurrency:
+  group: fsl-v4-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/afo-fsl-v4-compress-mcp
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB_NAME: afo-fsl-v4-compress-db
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
+      - name: Verify Cloudflare credentials are set
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID repo secret. See the comment block at the top of this workflow file for setup steps."
+            exit 1
+          fi
+
+      - name: Resolve or create D1 database
+        run: |
+          set -e
+          EXISTING=$(wrangler d1 list --json | jq -r --arg n "$DB_NAME" '.[] | select(.name==$n) | .uuid' | head -n1)
+          if [ -z "$EXISTING" ]; then
+            echo "Database $DB_NAME not found, creating it..."
+            wrangler d1 create "$DB_NAME" || true
+          else
+            echo "Database $DB_NAME already exists ($EXISTING)"
+          fi
+          DB_ID=$(wrangler d1 list --json | jq -r --arg n "$DB_NAME" '.[] | select(.name==$n) | .uuid' | head -n1)
+          if [ -z "$DB_ID" ]; then
+            echo "::error::Could not resolve a database_id for $DB_NAME after create attempt."
+            exit 1
+          fi
+          echo "Using D1 database_id: $DB_ID"
+          sed -i "s/pending-create-on-deploy/$DB_ID/" wrangler.jsonc
+          cat wrangler.jsonc
+
+      - name: Apply schema.sql to D1 (remote)
+        run: wrangler d1 execute "$DB_NAME" --remote --file=schema.sql
+
+      - name: Set worker secret (GITHUB_TOKEN)
+        run: echo "${{ secrets.FSL_GITHUB_PAT }}" | wrangler secret put GITHUB_TOKEN
+
+      - name: Deploy worker
+        run: wrangler deploy
+
+      - name: Done
+        run: echo "Deployed. Check the 'Deploy worker' step above for your live workers.dev URL."
