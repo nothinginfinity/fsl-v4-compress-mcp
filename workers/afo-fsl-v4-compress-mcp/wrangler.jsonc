@@ -1,0 +1,11 @@
+{
+  "name": "afo-fsl-v4-compress-mcp",
+  "main": "worker.js",
+  "compatibility_date": "2024-11-01"
+  ,"d1_databases": [
+    {"binding":"DB","database_name":"afo-fsl-v4-compress-db","database_id":"pending-create-on-deploy"}
+  ]
+  ,"vars":{"WORKER_VERSION":"0.1.0","WORKER_NAME":"afo-fsl-v4-compress-mcp"}
+  ,"observability":{"enabled":true,"head_sampling_rate":1}
+  ,"placement":{"mode":"smart"}
+}
