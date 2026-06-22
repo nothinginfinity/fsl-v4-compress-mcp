@@ -1,0 +1,20 @@
+{
+  "name": "afo-fsl-v4-compress-mcp",
+  "version": "0.1.0",
+  "description": "FSL V4 tiered SEMANTIC compression engine - lossy keyword-fingerprint compression (header/codex/tier1/tier1.5/tier2/tier2.5). Unlike raw-storage compressors, this NEVER persists original file content - only statistical term fingerprints per chunk. Produces the actual .v4.fsl tiered text format for direct LLM consumption.",
+  "main": "worker.js",
+  "wrangler": "wrangler.jsonc",
+  "secrets": [
+    "GITHUB_TOKEN"
+  ],
+  "tools": [
+    "afo_fsl_v4_compress_status",
+    "compress_repo_v4",
+    "get_v4_codex",
+    "query_v4",
+    "get_v4_tier1",
+    "export_v4",
+    "decompress_chunk_v4",
+    "compression_stats_v4"
+  ]
+}
