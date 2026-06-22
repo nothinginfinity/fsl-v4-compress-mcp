@@ -1,0 +1,53 @@
+name: Fix FSL V4 byteLen export
+
+on:
+  push:
+    paths:
+      - .github/workflows/fix-fsl-v4-bytelen.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch worker source
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'workers/afo-fsl-v4-compress-mcp/worker.js';
+          const workflow = '.github/workflows/fix-fsl-v4-bytelen.yml';
+          let src = fs.readFileSync(file, 'utf8');
+          const nowIsoAnchor = 'function nowIso(){return new Date().toISOString();}\n';
+          if (!src.includes('function byteLen(')) {
+            if (!src.includes(nowIsoAnchor)) {
+              throw new Error('nowIso anchor not found; refusing unanchored patch');
+            }
+            src = src.replace(
+              nowIsoAnchor,
+              nowIsoAnchor + 'function byteLen(str){return new TextEncoder().encode(String(str??"")).length;}\n'
+            );
+          }
+          src = src.replace(
+            ',ctype,txt.length,kwStr,nowIso()',
+            ',ctype,byteLen(txt),kwStr,nowIso()'
+          );
+          fs.writeFileSync(file, src);
+          fs.rmSync(workflow, { force: true });
+          NODE
+      - name: Commit fix and cleanup
+        run: |
+          git config user.name "afo-fix-bot"
+          git config user.email "afo-fix-bot@users.noreply.github.com"
+          git add workers/afo-fsl-v4-compress-mcp/worker.js .github/workflows/fix-fsl-v4-bytelen.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Fix FSL V4 export byteLen helper"
+            git push
+          fi
